@@ -34,7 +34,7 @@
 #define CREPUSCOLARE A3
 // 1 uscita
 #define LEDSTATO A4
-#define TXENABLE A6
+#define TXENABLE 12
 
 //unsigned long tinizioallarme,tinizioapricancello,tinizioaccensionefari;
 unsigned int tdurataallarme; // in secondi
@@ -154,7 +154,7 @@ void PulsanteAntifurtoClick() {
 void ElaboraCrepuscolare() {
   unsigned int val = 1024-analogRead(CREPUSCOLARE);
   if(!notte && (val<soglia_crepuscolare-isteresi_crepuscolare)) {notte=true; Tx('D',0,0); lanterna.On(); return;}
-  if(notte && (val>soglia_crepuscolare+isteresi_crepuscolare)) {notte=false; Tx('E',0,0); lanterna.Off(); return;}
+  if(notte && (val>soglia_crepuscolare+isteresi_crepuscolare)) {notte=false; Tx('E',0,0); lanterna.Off(); fari.Off(); lampada.Off(); return;}
 }
 
 void PirAttivato() {
@@ -251,6 +251,7 @@ void ElaboraComando(byte comando,byte *bytesricevuti,byte len) {
       setArmato();
       break;
     case 'C':
+    case 'T':
       apricancello.On(700);
       break;
     case 'R':
