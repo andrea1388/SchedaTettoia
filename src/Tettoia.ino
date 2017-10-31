@@ -8,7 +8,8 @@
 #include <Arduino.h>
 #include <EEPROM.h>
 #include "Antirimbalzo.h"
-#include <ControlloUscita.h>
+#include "Proto485.h"
+#include "ControlloUscita.h"
 #define DEBUG
 #ifdef DEBUG
  #define DEBUG_PRINT(x, ...)  Serial.print (x, ##__VA_ARGS__)
@@ -35,6 +36,7 @@
 // 1 uscita
 #define LEDSTATO A4
 #define TXENABLE 12
+#define INTERVALLOCONTROLLOCREPUSCOLARE 3000
 
 //unsigned long tinizioallarme,tinizioapricancello,tinizioaccensionefari;
 unsigned int tdurataallarme; // in secondi
@@ -56,6 +58,8 @@ ControlloUscita fari(RELEFARI,true,false);
 ControlloUscita lampada(RELELAMPADA,true,false);
 ControlloUscita lanterna(RELELANTERNA,true,false);
 ControlloUscita boh(RELEBOH,true,false);
+// comm
+Proto485 comm(TXENABLE);
 
 
 #define LEDPIN LED_BUILTIN
@@ -98,6 +102,7 @@ void setup() {
   swLuci.cbClickLungo=PulsanteLuciLongClick;
   swAntifurto.cbClickCorto=PulsanteAntifurtoClick;
   pir.cbClickCorto=PirAttivato;
+  comm.cbElaboraComando=ElaboraComando;
 }
 
 void loop() {
@@ -116,7 +121,7 @@ void loop() {
   // elabora funzioni
   ElaboraAntifurto();
   ElaboraCrepuscolare();
-  if(Serial.available()) ProcessaDatiSeriali();
+  if(Serial.available()) comm.ProcessaDatiSeriali(Serial.read());
   
 }
 
@@ -152,9 +157,12 @@ void PulsanteAntifurtoClick() {
 }
 
 void ElaboraCrepuscolare() {
+  static unsigned long int tultimocontrollo;
+  if((millis() - tultimocontrollo) < INTERVALLOCONTROLLOCREPUSCOLARE) return;
+  tultimocontrollo=millis();
   unsigned int val = 1024-analogRead(CREPUSCOLARE);
-  if(!notte && (val<soglia_crepuscolare-isteresi_crepuscolare)) {notte=true; Tx('D',0,0); lanterna.On(); return;}
-  if(notte && (val>soglia_crepuscolare+isteresi_crepuscolare)) {notte=false; Tx('E',0,0); lanterna.Off(); fari.Off(); lampada.Off(); return;}
+  if(!notte && (val<soglia_crepuscolare-isteresi_crepuscolare)) {notte=true; comm.Tx('D',0,0); lanterna.On(); return;}
+  if(notte && (val>soglia_crepuscolare+isteresi_crepuscolare)) {notte=false; comm.Tx('E',0,0); lanterna.Off(); fari.Off(); lampada.Off(); return;}
 }
 
 void PirAttivato() {
@@ -178,72 +186,10 @@ void ElaboraAntifurto() {
   // se è già stato attivato esci
   if(!sirena.Completato()) return;
   sirena.On(tdurataallarme);
-  Tx('J',0,0);
+  comm.Tx('J',0,0);
 }
 
 
-void Tx(char cmd, byte len, const char* b) {
-    byte sum=(byte)cmd+len;
-    for(byte r=0;r<len;r++) sum+=b[r];
-    digitalWrite(TXENABLE, HIGH);
-    Serial.write('A');
-    Serial.write(cmd);
-    Serial.write(len);
-    if(len>0) Serial.write(b,len);
-    Serial.write(sum);
-    while (!(UCSR0A & _BV(TXC0)));
-    digitalWrite(TXENABLE, LOW);
-}
-
-#define A 0
-#define L 1
-#define D 2
-#define C 3
-#define S 4
-
-void ProcessaDatiSeriali() {
-  static byte numerobytesricevuti=0,bytesricevuti[6],prossimodato=A,lunghezza,comando,sum;
-  static unsigned long tultimodatoricevuto;
-  char c=Serial.read();
-  /*
-  DEBUG_PRINT("c=");
-  DEBUG_PRINT(c,HEX);
-  DEBUG_PRINT(" prox=");
-  DEBUG_PRINTLN(prossimodato);
-  */
-  if(millis()-tultimodatoricevuto > 300) {prossimodato=A; };
-  tultimodatoricevuto=millis();
-  if(prossimodato==A && c=='A') {prossimodato=C; numerobytesricevuti=0; return;}
-  if(prossimodato==C) {comando=c; prossimodato=L; sum=c; return;}
-  if(prossimodato==L) {
-    sum+=c;
-    lunghezza=c;
-    prossimodato=D; 
-    if(lunghezza>6) prossimodato=A;
-    if(lunghezza==0) {
-      prossimodato=S;
-    }
-    /*
-    DEBUG_PRINT("next D");
-    DEBUG_PRINT(" l=");
-    DEBUG_PRINTLN(lunghezza);
-    */
-    return;
-  }
-  if(prossimodato==D) {
-    sum+=c;
-    bytesricevuti[numerobytesricevuti++]=c;
-    if(numerobytesricevuti==lunghezza) prossimodato=S;
-    return;
-  }
-  if(prossimodato==S) {
-    if(c==sum) {
-      ElaboraComando(comando,bytesricevuti,lunghezza);
-      prossimodato=A;
-      //DEBUG_PRINTLN("next A");
-    }
-  }
-}
 
 void ElaboraComando(byte comando,byte *bytesricevuti,byte len) {
   switch(comando) {
@@ -252,7 +198,7 @@ void ElaboraComando(byte comando,byte *bytesricevuti,byte len) {
       break;
     case 'C':
     case 'T':
-      apricancello.On(700);
+      apricancello.OnOff(700,1000);
       break;
     case 'R':
       setInCasa();
@@ -268,7 +214,7 @@ void ElaboraComando(byte comando,byte *bytesricevuti,byte len) {
       break;
     case 'H':
       //ping
-      Tx('G',1,"D");
+      comm.Tx('G',1,"D");
       break;
     // movimento da cancello
     case 'B':
@@ -298,14 +244,14 @@ void MemorizzaParametro(byte *bytesricevuti,byte len) {
 void setDisarmato() {
   modoantifurto=DISARMATO;
   sirena.Off();
-  Tx('S',0,0);
+  comm.Tx('S',0,0);
   impostaled(30,1500);
 }
 
 // armato ma non in casa se le porte sono aperte e la chiave è on non entra in questo modo
 void setArmato() {
   if(digitalRead(MAGNETICI)==HIGH) return;
-  Tx('R',0,0);
+  comm.Tx('R',0,0);
   modoantifurto=ARMATO;
   impostaled(200,200);
 }
@@ -313,7 +259,7 @@ void setArmato() {
 // armato in casa se le porte sono aperte non entra in questo modo
 void setInCasa() {
   if(digitalRead(MAGNETICI)==HIGH) return;
-  Tx('U',0,0);
+  comm.Tx('U',0,0);
   modoantifurto=INCASA;
   impostaled(20,20);
 }
