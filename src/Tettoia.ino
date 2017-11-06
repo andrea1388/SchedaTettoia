@@ -10,7 +10,7 @@
 #include "Antirimbalzo.h"
 #include "Proto485.h"
 #include "ControlloUscita.h"
-#define DEBUG
+//#define DEBUG
 #ifdef DEBUG
  #define DEBUG_PRINT(x, ...)  Serial.print (x, ##__VA_ARGS__)
  #define DEBUG_PRINTLN(x, ...)  Serial.println (x, ##__VA_ARGS__)
@@ -40,7 +40,7 @@
 
 //unsigned long tinizioallarme,tinizioapricancello,tinizioaccensionefari;
 unsigned int tdurataallarme; // in secondi
-
+byte tempoFari; // tempo accensione fari da pir in minuti
 unsigned int soglia_crepuscolare;
 byte isteresi_crepuscolare;
 bool notte, faridapir;
@@ -59,7 +59,7 @@ ControlloUscita lampada(RELELAMPADA,true,false);
 ControlloUscita lanterna(RELELANTERNA,true,false);
 ControlloUscita boh(RELEBOH,true,false);
 // comm
-Proto485 comm(TXENABLE);
+Proto485 comm(&Serial,TXENABLE,true);
 
 
 #define LEDPIN LED_BUILTIN
@@ -80,9 +80,10 @@ void setup() {
   setDisarmato();
   
   // leggi parametri da eeprom
-  tdurataallarme=EEPROM.read(0)*1000;
+  tdurataallarme=EEPROM.read(0);
   isteresi_crepuscolare=EEPROM.read(1);
   EEPROM.get(2,soglia_crepuscolare);
+  tempoFari=EEPROM.read(4);
 
   //
   notte=false;
@@ -93,8 +94,12 @@ void setup() {
   DEBUG_PRINT(tdurataallarme);
   DEBUG_PRINT(" soglia=");
   DEBUG_PRINT(soglia_crepuscolare);
+  DEBUG_PRINT(" tempo fari=");
+  DEBUG_PRINT(tempoFari);
   DEBUG_PRINT(" ister=");
   DEBUG_PRINTLN(isteresi_crepuscolare);
+  DEBUG_PRINT("F_CPU=");
+  DEBUG_PRINTLN(F_CPU,DEC);
 
   // setup ingressi
   swLuci.tDurataClickLungo=350;
@@ -102,6 +107,7 @@ void setup() {
   swLuci.cbClickLungo=PulsanteLuciLongClick;
   swAntifurto.cbClickCorto=PulsanteAntifurtoClick;
   pir.cbClickCorto=PirAttivato;
+  pir.tPeriodoBlackOut=2000;
   comm.cbElaboraComando=ElaboraComando;
 }
 
@@ -166,8 +172,13 @@ void ElaboraCrepuscolare() {
 }
 
 void PirAttivato() {
+  AccendiFariSeNotte();
+  comm.Tx('Z',0,0);
+}
+
+void AccendiFariSeNotte() {
   if(notte) {
-    if(!fari.isOn()) fari.On(180000);
+    if(!fari.isOn()) fari.On(tempoFari*60000);
   }
 }
 
@@ -178,14 +189,14 @@ void impostaled(int Ton, int Toff) {
 
 void ElaboraAntifurto() {
   static bool statoprecedente;
-  if(!sirena.isOn() && statoprecedente==true) {setDisarmato();};
+  if(!sirena.isOn() && statoprecedente==true) {setDisarmato(); comm.Tx('K',0,0);};
   statoprecedente=sirena.isOn();
   if(modoantifurto==DISARMATO) return;
   if(digitalRead(MAGNETICI)==LOW) return;
   if(modoantifurto==ARMATO && digitalRead(CHIAVE)==HIGH) return;
   // se è già stato attivato esci
   if(!sirena.Completato()) return;
-  sirena.On(tdurataallarme);
+  sirena.On(tdurataallarme*1000);
   comm.Tx('J',0,0);
 }
 
@@ -199,8 +210,9 @@ void ElaboraComando(byte comando,byte *bytesricevuti,byte len) {
     case 'C':
     case 'T':
       apricancello.OnOff(700,1000);
+      AccendiFariSeNotte();
       break;
-    case 'R':
+    case 'N':
       setInCasa();
       break;
     case 'O':
@@ -209,12 +221,12 @@ void ElaboraComando(byte comando,byte *bytesricevuti,byte len) {
     case 'Q':
       MemorizzaParametro(bytesricevuti,len);
       break;
-    case 'N':
+    case 'P':
       setArmato();
       break;
-    case 'H':
-      //ping
-      comm.Tx('G',1,"D");
+    case 'L':
+      //richiesta stato
+      TrasmettiStatoSCheda();
       break;
     // movimento da cancello
     case 'B':
@@ -226,16 +238,21 @@ void ElaboraComando(byte comando,byte *bytesricevuti,byte len) {
 void MemorizzaParametro(byte *bytesricevuti,byte len) {
 	switch(bytesricevuti[0]) {
 		case 'S':
-			soglia_crepuscolare=bytesricevuti[1]+bytesricevuti[2]*256;
+      soglia_crepuscolare=bytesricevuti[1]+bytesricevuti[2]*256;
+      if(soglia_crepuscolare>1000) return;
 			EEPROM.put(2,soglia_crepuscolare);
 			break;
 		case 'I':
-			isteresi_crepuscolare=bytesricevuti[1];
+      isteresi_crepuscolare=bytesricevuti[1];
 			EEPROM.put(1,isteresi_crepuscolare);
 			break;
 		case 'D':
 			tdurataallarme=bytesricevuti[1];
-			EEPROM.put(0,tdurataallarme);
+			EEPROM.put(0,bytesricevuti[1]);
+			break;
+    case 'T':
+      tempoFari=bytesricevuti[1];
+			EEPROM.put(4,tempoFari);
 			break;
 	}
 }
@@ -264,3 +281,35 @@ void setInCasa() {
   impostaled(20,20);
 }
 
+/*
+ B0
+ bits:
+ 10
+ 00 disarmato
+ 01 armato
+ 10 in casa
+ 11 niente
+
+*/
+void TrasmettiStatoSCheda() {
+  byte b0=modoantifurto,b1=0;
+  if(digitalRead(CHIAVE)==LOW) b0=b0 | 0x04;
+  if(digitalRead(MAGNETICI)==LOW) b0=b0 | 0x08;
+  if(notte) b0=b0 | 0x10;
+  if(digitalRead(MOVIMENTO)==HIGH) b0=b0 | 0x20;
+  if(digitalRead(RELEFARI)==LOW) b1=b1 | 0x01;
+  if(digitalRead(RELEAPRICANCELLO)==LOW) b1=b1 | 0x02;
+  if(digitalRead(RELELAMPADA)==LOW) b1=b1 | 0x04;
+  if(digitalRead(RELELANTERNA)==LOW) b1=b1 | 0x08;
+  if(digitalRead(RELESIRENA)==LOW) b1=b1 | 0x10;
+  if(digitalRead(RELEBOH)==LOW) b1=b1 | 0x20;
+  byte par[7];
+  par[0]=b0;
+  par[1]=b1;
+  par[2]=tdurataallarme;
+  par[3]=isteresi_crepuscolare;
+  par[4]=(soglia_crepuscolare >> 8);
+  par[5]=(soglia_crepuscolare & 0xff);
+  par[6]=tempoFari;
+  comm.Tx('M',7,(const char *)par);
+}
