@@ -35,6 +35,7 @@
 #define CREPUSCOLARE A3
 // 1 uscita
 #define LEDSTATO A4
+#define LEDROSSO A5
 #define TXENABLE 12
 #define INTERVALLOCONTROLLOCREPUSCOLARE 3000
 
@@ -51,6 +52,7 @@ Antirimbalzo swLuci;
 Antirimbalzo swAntifurto;
 Antirimbalzo pir;
 ControlloUscita led(LEDSTATO,false,false);
+ControlloUscita ledrosso(LEDROSSO,false,false);
 // relè
 ControlloUscita sirena(RELESIRENA,true,false);
 ControlloUscita apricancello(RELEAPRICANCELLO,true,false);
@@ -72,7 +74,6 @@ void setup() {
   pinMode(MAGNETICI, INPUT_PULLUP);
   pinMode(CHIAVE, INPUT_PULLUP);
   pinMode(MOVIMENTO, INPUT_PULLUP);
-  pinMode(LEDSTATO, OUTPUT);
   pinMode(CREPUSCOLARE, INPUT_PULLUP);
 
   digitalWrite(TXENABLE, LOW);
@@ -189,7 +190,7 @@ void impostaled(int Ton, int Toff) {
 
 void ElaboraAntifurto() {
   static bool statoprecedente;
-  if(!sirena.isOn() && statoprecedente==true) {setDisarmato(); comm.Tx('K',0,0);};
+  if(!sirena.isOn() && statoprecedente==true) {setDisarmato(); comm.Tx('K',0,0); ledrosso.On();};
   statoprecedente=sirena.isOn();
   if(modoantifurto==DISARMATO) return;
   if(digitalRead(MAGNETICI)==LOW) return;
@@ -197,6 +198,7 @@ void ElaboraAntifurto() {
   // se è già stato attivato esci
   if(!sirena.Completato()) return;
   sirena.On(tdurataallarme*1000);
+  ledrosso.On();
   comm.Tx('J',0,0);
 }
 
@@ -263,6 +265,7 @@ void setDisarmato() {
   sirena.Off();
   comm.Tx('S',0,0);
   impostaled(30,1500);
+  ledrosso.Off();
 }
 
 // armato ma non in casa se le porte sono aperte e la chiave è on non entra in questo modo
