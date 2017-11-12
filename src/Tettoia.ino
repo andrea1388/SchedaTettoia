@@ -54,8 +54,8 @@ Antirimbalzo pir;
 ControlloUscita led(LEDSTATO,false,false);
 ControlloUscita ledrosso(LEDROSSO,false,false);
 // relè
-ControlloUscita sirena(RELESIRENA,true,false);
-ControlloUscita apricancello(RELEAPRICANCELLO,true,false);
+ControlloUscita sirena(RELESIRENA,false,false);
+ControlloUscita apricancello(RELEAPRICANCELLO,false,false);
 ControlloUscita fari(RELEFARI,true,false);
 ControlloUscita lampada(RELELAMPADA,true,false);
 ControlloUscita lanterna(RELELANTERNA,true,false);
