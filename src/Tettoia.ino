@@ -107,7 +107,7 @@ void setup() {
   swLuci.cbClickCorto=PulsanteLuciClick;
   swLuci.cbClickLungo=PulsanteLuciLongClick;
   swAntifurto.cbClickCorto=PulsanteAntifurtoClick;
-  pir.cbClickCorto=PirAttivato;
+  pir.cbInizioStatoOn=PirAttivato;
   pir.tPeriodoBlackOut=2000;
   comm.cbElaboraComando=ElaboraComando;
 }
@@ -232,7 +232,7 @@ void ElaboraComando(byte comando,byte *bytesricevuti,byte len) {
       break;
     // movimento da cancello
     case 'B':
-      PirAttivato();
+      AccendiFariSeNotte();
       break;
   }
 }
