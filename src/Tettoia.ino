@@ -1,5 +1,12 @@
 /*
- * Centralina tettoia - versione 1
+ * Centralina tettoia - versione 2
+ * 
+ * modifiche 12/1/2018
+ * modo fuori casa non più con chiave ma con uscita temporizzata
+ * modo allarme: off, in casa click, fuori casa click lungo. Dai modi allarmi con un click li spegne
+ * buzzer per il tempo d'uscita
+ * Gestisce l'apertura della porta dopo il cancello
+ * 
  * accende e spegne le 3 luci alla pressione del pulsante
  * parte da tutto spento (acceso =low)
  * al click accende/spegne la lanterna
@@ -21,16 +28,16 @@
 
 // 6 relè 
 #define RELEFARI A0
-#define RELEBOH 3
+#define RELESIRENA 3
 #define RELELAMPADA 4
 #define RELELANTERNA 5
-#define RELESIRENA 6
+#define RELEAPRIPORTA 6
 #define RELEAPRICANCELLO 7
 // 7 ingressi
 #define PULSANTELUCI 8
 #define PULSANTEMODOALLARME 9
 #define MAGNETICI 10
-#define CHIAVE A1
+#define BUZZER A1
 #define MOVIMENTO A2
 #define CREPUSCOLARE A3
 // 1 uscita
@@ -41,11 +48,13 @@
 
 //unsigned long tinizioallarme,tinizioapricancello,tinizioaccensionefari;
 unsigned int tdurataallarme; // in secondi
+byte tempoUscita; // in secondi
+unsigned long int tInizioTimeoutUscita;
 byte tempoFari; // tempo accensione fari da pir in minuti
 unsigned int soglia_crepuscolare;
 byte isteresi_crepuscolare;
-bool notte, faridapir;
-typedef enum {DISARMATO, ARMATO, INCASA} modalitaantifurto;
+bool notte, faridapir,precstatoapricencello;
+typedef enum {DISARMATO, FUORICASA, INCASA, TIMEOUTUSCITA} modalitaantifurto;
 modalitaantifurto modoantifurto; // 0=spento, 1=armato non in casa, 2=armato in casa
 
 Antirimbalzo swLuci;
@@ -53,13 +62,14 @@ Antirimbalzo swAntifurto;
 Antirimbalzo pir;
 ControlloUscita led(LEDSTATO,false,false);
 ControlloUscita ledrosso(LEDROSSO,false,false);
+ControlloUscita buzzer(BUZZER,false,false);
 // relè
-ControlloUscita sirena(RELESIRENA,false,false);
 ControlloUscita apricancello(RELEAPRICANCELLO,false,false);
+ControlloUscita apriporta(RELEAPRIPORTA,false,false);
+ControlloUscita sirena(RELESIRENA,true,false);
 ControlloUscita fari(RELEFARI,true,false);
 ControlloUscita lampada(RELELAMPADA,true,false);
 ControlloUscita lanterna(RELELANTERNA,true,false);
-ControlloUscita boh(RELEBOH,true,false);
 // comm
 Proto485 comm(&Serial,TXENABLE,true);
 
@@ -72,7 +82,6 @@ void setup() {
   pinMode(PULSANTELUCI, INPUT_PULLUP);
   pinMode(PULSANTEMODOALLARME, INPUT_PULLUP);
   pinMode(MAGNETICI, INPUT_PULLUP);
-  pinMode(CHIAVE, INPUT_PULLUP);
   pinMode(MOVIMENTO, INPUT_PULLUP);
   pinMode(CREPUSCOLARE, INPUT_PULLUP);
 
@@ -85,6 +94,7 @@ void setup() {
   isteresi_crepuscolare=EEPROM.read(1);
   EEPROM.get(2,soglia_crepuscolare);
   tempoFari=EEPROM.read(4);
+  tempoUscita=EEPROM.read(5);
 
   //
   notte=false;
@@ -99,6 +109,8 @@ void setup() {
   DEBUG_PRINT(tempoFari);
   DEBUG_PRINT(" ister=");
   DEBUG_PRINTLN(isteresi_crepuscolare);
+  DEBUG_PRINT(" tempoUscita=");
+  DEBUG_PRINTLN(tempoUscita);
   DEBUG_PRINT("F_CPU=");
   DEBUG_PRINTLN(F_CPU,DEC);
 
@@ -107,9 +119,12 @@ void setup() {
   swLuci.cbClickCorto=PulsanteLuciClick;
   swLuci.cbClickLungo=PulsanteLuciLongClick;
   swAntifurto.cbClickCorto=PulsanteAntifurtoClick;
+  swAntifurto.cbClickLungo=PulsanteAntifurtoClickLungo;
+  swAntifurto.tDurataClickLungo=350;
   pir.cbInizioStatoOn=PirAttivato;
   pir.tPeriodoBlackOut=2000;
   comm.cbElaboraComando=ElaboraComando;
+  TrasmettiStatoSCheda();
 }
 
 void loop() {
@@ -119,16 +134,28 @@ void loop() {
   pir.Elabora(digitalRead(MOVIMENTO)==HIGH);
   // elabora uscite
   led.Elabora();
+  ledrosso.Elabora();
   sirena.Elabora();
   apricancello.Elabora();
+  apriporta.Elabora();
   fari.Elabora();
   lanterna.Elabora();
   lampada.Elabora();
+  buzzer.Elabora();
   
   // elabora funzioni
   ElaboraAntifurto();
   ElaboraCrepuscolare();
-  if(Serial.available()) comm.ProcessaDatiSeriali(Serial.read());
+  if(Serial.available()) {comm.ProcessaDatiSeriali(Serial.read()); buzzer.On(1);}
+  if(modoantifurto==TIMEOUTUSCITA && (millis()- tInizioTimeoutUscita)>tempoUscita*1000)
+  {
+    setFuoriCasa();
+  }
+  if(apricancello.Completato() && precstatoapricencello)
+  {
+    precstatoapricencello=false;
+    apriporta.OnOff(700,1000);
+  }
   
 }
 
@@ -148,15 +175,16 @@ void PulsanteLuciLongClick() {
 }
 
 void PulsanteAntifurtoClick() {
+  if(modoantifurto==DISARMATO) setInCasa(); else setDisarmato();
+  ledrosso.Off();
+  DEBUG_PRINT(" modoalm=");
+  DEBUG_PRINTLN(modoantifurto);
+}
+
+void PulsanteAntifurtoClickLungo() {
   switch(modoantifurto) {
     case DISARMATO:
-      setArmato();
-      break;
-    case ARMATO:
-      setInCasa();
-      break;
-    case INCASA:
-      setDisarmato();
+      setInizioTimeoutUscita();
       break;
   }
   DEBUG_PRINT(" modoalm=");
@@ -190,11 +218,11 @@ void impostaled(int Ton, int Toff) {
 
 void ElaboraAntifurto() {
   static bool statoprecedente;
-  if(!sirena.isOn() && statoprecedente==true) {setDisarmato(); comm.Tx('K',0,0); ledrosso.On();};
+  if(!sirena.isOn() && statoprecedente==true) {setDisarmato(); comm.Tx('K',0,0);};
   statoprecedente=sirena.isOn();
   if(modoantifurto==DISARMATO) return;
   if(digitalRead(MAGNETICI)==LOW) return;
-  if(modoantifurto==ARMATO && digitalRead(CHIAVE)==HIGH) return;
+  if(modoantifurto==TIMEOUTUSCITA) return;
   // se è già stato attivato esci
   if(!sirena.Completato()) return;
   sirena.On(tdurataallarme*1000);
@@ -206,12 +234,14 @@ void ElaboraAntifurto() {
 
 void ElaboraComando(byte comando,byte *bytesricevuti,byte len) {
   switch(comando) {
-    case 'A':
-      setArmato();
-      break;
     case 'C':
+      apricancello.OnOff(700,1000);
+      precstatoapricencello=true;
+      AccendiFariSeNotte();
+      break;
     case 'T':
       apricancello.OnOff(700,1000);
+      precstatoapricencello=true;
       AccendiFariSeNotte();
       break;
     case 'N':
@@ -219,12 +249,13 @@ void ElaboraComando(byte comando,byte *bytesricevuti,byte len) {
       break;
     case 'O':
       setDisarmato();
+      ledrosso.Off();
       break;
     case 'Q':
       MemorizzaParametro(bytesricevuti,len);
       break;
     case 'P':
-      setArmato();
+      setInizioTimeoutUscita();
       break;
     case 'L':
       //richiesta stato
@@ -256,6 +287,10 @@ void MemorizzaParametro(byte *bytesricevuti,byte len) {
       tempoFari=bytesricevuti[1];
 			EEPROM.put(4,tempoFari);
 			break;
+    case 'Y':
+      tempoUscita=bytesricevuti[1];
+			EEPROM.put(5,tempoUscita);
+			break;
 	}
 }
 
@@ -265,15 +300,22 @@ void setDisarmato() {
   sirena.Off();
   comm.Tx('S',0,0);
   impostaled(30,1500);
-  ledrosso.Off();
+  buzzer.Off();
+}
+
+void setInizioTimeoutUscita() {
+  modoantifurto=TIMEOUTUSCITA;
+  tInizioTimeoutUscita=millis();
+  buzzer.OndaQuadra(500,500);
+  impostaled(300,300);
 }
 
 // armato ma non in casa se le porte sono aperte e la chiave è on non entra in questo modo
-void setArmato() {
-  if(digitalRead(MAGNETICI)==HIGH) return;
+void setFuoriCasa() {
   comm.Tx('R',0,0);
-  modoantifurto=ARMATO;
-  impostaled(200,200);
+  modoantifurto=FUORICASA;
+  buzzer.Off();
+  impostaled(50,50);
 }
 
 // armato in casa se le porte sono aperte non entra in questo modo
@@ -281,7 +323,7 @@ void setInCasa() {
   if(digitalRead(MAGNETICI)==HIGH) return;
   comm.Tx('U',0,0);
   modoantifurto=INCASA;
-  impostaled(20,20);
+  impostaled(50,50);
 }
 
 /*
@@ -296,7 +338,6 @@ void setInCasa() {
 */
 void TrasmettiStatoSCheda() {
   byte b0=modoantifurto,b1=0;
-  if(digitalRead(CHIAVE)==LOW) b0=b0 | 0x04;
   if(digitalRead(MAGNETICI)==LOW) b0=b0 | 0x08;
   if(notte) b0=b0 | 0x10;
   if(digitalRead(MOVIMENTO)==HIGH) b0=b0 | 0x20;
@@ -305,8 +346,8 @@ void TrasmettiStatoSCheda() {
   if(digitalRead(RELELAMPADA)==LOW) b1=b1 | 0x04;
   if(digitalRead(RELELANTERNA)==LOW) b1=b1 | 0x08;
   if(digitalRead(RELESIRENA)==LOW) b1=b1 | 0x10;
-  if(digitalRead(RELEBOH)==LOW) b1=b1 | 0x20;
-  byte par[7];
+  if(digitalRead(RELEAPRIPORTA)==LOW) b1=b1 | 0x20;
+  byte par[8];
   par[0]=b0;
   par[1]=b1;
   par[2]=tdurataallarme;
@@ -314,5 +355,6 @@ void TrasmettiStatoSCheda() {
   par[4]=(soglia_crepuscolare >> 8);
   par[5]=(soglia_crepuscolare & 0xff);
   par[6]=tempoFari;
-  comm.Tx('M',7,(const char *)par);
+  par[7]=tempoUscita;
+  comm.Tx('M',8,(const char *)par);
 }
