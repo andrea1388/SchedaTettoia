@@ -1,5 +1,8 @@
 {
     "terminal.integrated.env.osx": {
         "PATH": "/Users/andreacarrara/.platformio/penv/bin:/usr/local/git/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/share/dotnet:/opt/X11/bin:/Library/Frameworks/Mono.framework/Versions/Current/Commands"
-    }
+    },
+    "editor.wordWrap": "on",
+    "editor.formatOnType": true,
+    "C_Cpp.intelliSenseEngine": "Tag Parser"
 }

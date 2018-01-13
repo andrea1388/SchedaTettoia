@@ -17,7 +17,7 @@
 #include "Antirimbalzo.h"
 #include "Proto485.h"
 #include "ControlloUscita.h"
-//#define DEBUG
+#define DEBUG
 #ifdef DEBUG
  #define DEBUG_PRINT(x, ...)  Serial.print (x, ##__VA_ARGS__)
  #define DEBUG_PRINTLN(x, ...)  Serial.println (x, ##__VA_ARGS__)
@@ -46,15 +46,19 @@
 #define TXENABLE 12
 #define INTERVALLOCONTROLLOCREPUSCOLARE 3000
 
-//unsigned long tinizioallarme,tinizioapricancello,tinizioaccensionefari;
-unsigned int tdurataallarme; // in secondi
-byte tempoUscita; // in secondi
-unsigned long int tInizioTimeoutUscita;
+// tempi gestione centralina
+unsigned int tempoAllarme; // in secondi
+byte tempoUscita; // in minuti
+byte tempoEntrata; // in minuti
 byte tempoFari; // tempo accensione fari da pir in minuti
+
+// contatori timeout
+unsigned long int tInizioTimeoutUscita, tInizioTimeoutEntrata;
+
 unsigned int soglia_crepuscolare;
 byte isteresi_crepuscolare;
 bool notte, faridapir,precstatoapricencello;
-typedef enum {DISARMATO, FUORICASA, INCASA, TIMEOUTUSCITA} modalitaantifurto;
+typedef enum {DISARMATO, INCASA, ALLARME, FINEALLARME, TIMEOUTUSCITA, FUORICASA, TIMEOUTENTRATA} modalitaantifurto;
 modalitaantifurto modoantifurto; // 0=spento, 1=armato non in casa, 2=armato in casa
 
 Antirimbalzo swLuci;
@@ -90,28 +94,31 @@ void setup() {
   setDisarmato();
   
   // leggi parametri da eeprom
-  tdurataallarme=EEPROM.read(0);
+  tempoAllarme=EEPROM.read(0);
   isteresi_crepuscolare=EEPROM.read(1);
   EEPROM.get(2,soglia_crepuscolare);
   tempoFari=EEPROM.read(4);
   tempoUscita=EEPROM.read(5);
+  tempoEntrata=EEPROM.read(6);
 
   //
   notte=false;
   modoantifurto=DISARMATO;
 
   // output
-  DEBUG_PRINT("dural=");
-  DEBUG_PRINT(tdurataallarme);
-  DEBUG_PRINT(" soglia=");
+  DEBUG_PRINT("tempoAllarme=");
+  DEBUG_PRINT(tempoAllarme);
+  DEBUG_PRINT("s soglia=");
   DEBUG_PRINT(soglia_crepuscolare);
   DEBUG_PRINT(" tempo fari=");
   DEBUG_PRINT(tempoFari);
-  DEBUG_PRINT(" ister=");
+  DEBUG_PRINT("m ister=");
   DEBUG_PRINTLN(isteresi_crepuscolare);
   DEBUG_PRINT(" tempoUscita=");
   DEBUG_PRINTLN(tempoUscita);
-  DEBUG_PRINT("F_CPU=");
+  DEBUG_PRINT("m tempoEntrata=");
+  DEBUG_PRINTLN(tempoUscita);
+  DEBUG_PRINT("m F_CPU=");
   DEBUG_PRINTLN(F_CPU,DEC);
 
   // setup ingressi
@@ -144,13 +151,12 @@ void loop() {
   buzzer.Elabora();
   
   // elabora funzioni
-  ElaboraAntifurto();
+  if(digitalRead(MAGNETICI)==LOW)
+    ElaboraAperturaMagnetici();
+
+  ElaboraTimeoutAntifurto();
   ElaboraCrepuscolare();
-  if(Serial.available()) {comm.ProcessaDatiSeriali(Serial.read()); buzzer.On(1);}
-  if(modoantifurto==TIMEOUTUSCITA && (millis()- tInizioTimeoutUscita)>tempoUscita*1000)
-  {
-    setFuoriCasa();
-  }
+  if(Serial.available()) {comm.ProcessaDatiSeriali(Serial.read());}
   if(apricancello.Completato() && precstatoapricencello)
   {
     precstatoapricencello=false;
@@ -175,10 +181,19 @@ void PulsanteLuciLongClick() {
 }
 
 void PulsanteAntifurtoClick() {
-  if(modoantifurto==DISARMATO) setInCasa(); else setDisarmato();
-  ledrosso.Off();
-  DEBUG_PRINT(" modoalm=");
-  DEBUG_PRINTLN(modoantifurto);
+  switch(modoantifurto) {
+    case DISARMATO:
+      setInCasa();
+      break;
+    case INCASA:
+      setDisarmato();
+      break;
+    case FINEALLARME:
+      setDisarmato();
+      break;
+    }
+    DEBUG_PRINT(" modoalm=");
+    DEBUG_PRINTLN(modoantifurto);
 }
 
 void PulsanteAntifurtoClickLungo() {
@@ -186,9 +201,18 @@ void PulsanteAntifurtoClickLungo() {
     case DISARMATO:
       setInizioTimeoutUscita();
       break;
-  }
-  DEBUG_PRINT(" modoalm=");
-  DEBUG_PRINTLN(modoantifurto);
+    case TIMEOUTUSCITA:
+      setDisarmato();
+      break;
+    case FUORICASA:
+      setDisarmato();
+      break;
+    case TIMEOUTENTRATA:
+      setDisarmato();
+      break;
+    }
+    DEBUG_PRINT(" modoalm=");
+    DEBUG_PRINTLN(modoantifurto);
 }
 
 void ElaboraCrepuscolare() {
@@ -215,41 +239,67 @@ void impostaled(int Ton, int Toff) {
   led.OndaQuadra(Ton,Toff);
 }
 
+void ElaboraAperturaMagnetici() 
+{
+  switch(modoantifurto) {
+    case INCASA:
+      if(digitalRead(MAGNETICI)==LOW)
+        setAllarme();
+      break;
 
-void ElaboraAntifurto() {
-  static bool statoprecedente;
-  if(!sirena.isOn() && statoprecedente==true) {setDisarmato(); comm.Tx('K',0,0);};
-  statoprecedente=sirena.isOn();
-  if(modoantifurto==DISARMATO) return;
-  if(digitalRead(MAGNETICI)==LOW) return;
-  if(modoantifurto==TIMEOUTUSCITA) return;
-  // se è già stato attivato esci
-  if(!sirena.Completato()) return;
-  sirena.On(tdurataallarme*1000);
-  ledrosso.On();
-  comm.Tx('J',0,0);
+    case FUORICASA:
+      if(digitalRead(MAGNETICI)==LOW)
+        setInizioTimeoutEntrata();
+      break;
+
+    }
+    DEBUG_PRINT(" modoalm=");
+    DEBUG_PRINTLN(modoantifurto);
 }
 
+void ElaboraTimeoutAntifurto() {
 
+  switch(modoantifurto) 
+  {
+    case TIMEOUTUSCITA:
+      if((millis()- tInizioTimeoutUscita)>tempoUscita*1000)
+        setFuoriCasa();
+      break;
+
+    case TIMEOUTENTRATA:
+      if((millis()- tInizioTimeoutEntrata)>tempoEntrata*1000)
+        setAllarme();
+      break;
+
+  }
+  DEBUG_PRINT(" modoalm=");
+  DEBUG_PRINTLN(modoantifurto);
+
+}
+
+void ApricancelloEPorta()
+{
+  apricancello.OnOff(700,1000);
+  precstatoapricencello=true;
+}
 
 void ElaboraComando(byte comando,byte *bytesricevuti,byte len) {
   switch(comando) {
-    case 'C':
-      apricancello.OnOff(700,1000);
-      precstatoapricencello=true;
+    case 'C': // pulsante apricancello
+      ApricancelloEPorta();
       AccendiFariSeNotte();
       break;
-    case 'T':
-      apricancello.OnOff(700,1000);
-      precstatoapricencello=true;
+    case 'T': // tag ricevuto
+      ApricancelloEPorta();
       AccendiFariSeNotte();
+      if(modoantifurto==FUORICASA || modoantifurto==INCASA)
+        setDisarmato();
       break;
     case 'N':
       setInCasa();
       break;
     case 'O':
       setDisarmato();
-      ledrosso.Off();
       break;
     case 'Q':
       MemorizzaParametro(bytesricevuti,len);
@@ -280,7 +330,7 @@ void MemorizzaParametro(byte *bytesricevuti,byte len) {
 			EEPROM.put(1,isteresi_crepuscolare);
 			break;
 		case 'D':
-			tdurataallarme=bytesricevuti[1];
+			tempoAllarme=bytesricevuti[1];
 			EEPROM.put(0,bytesricevuti[1]);
 			break;
     case 'T':
@@ -291,16 +341,41 @@ void MemorizzaParametro(byte *bytesricevuti,byte len) {
       tempoUscita=bytesricevuti[1];
 			EEPROM.put(5,tempoUscita);
 			break;
+    case 'U':
+      tempoEntrata=bytesricevuti[1];
+			EEPROM.put(6,tempoUscita);
+			break;
 	}
 }
 
+// typedef enum {DISARMATO, INCASA, ALLARME, FINEALLARME, TIMEOUTUSCITA, FUORICASA, TIMEOUTENTRATA} modalitaantifurto;
 
 void setDisarmato() {
   modoantifurto=DISARMATO;
   sirena.Off();
   comm.Tx('S',0,0);
   impostaled(30,1500);
-  buzzer.Off();
+  ledrosso.Off();
+}
+
+// armato in casa se le porte sono aperte non entra in questo modo
+void setInCasa() {
+  if(digitalRead(MAGNETICI)==HIGH) return;
+  comm.Tx('U',0,0);
+  modoantifurto=INCASA;
+  impostaled(50,50);
+}
+
+// armato in casa se le porte sono aperte non entra in questo modo
+void setAllarme() {
+  comm.Tx('J',0,0);
+  modoantifurto=ALLARME;
+  ledrosso.On();
+}
+
+void setFineAllarme() {
+  comm.Tx('K',0,0);
+  modoantifurto=FINEALLARME;
 }
 
 void setInizioTimeoutUscita() {
@@ -318,13 +393,13 @@ void setFuoriCasa() {
   impostaled(50,50);
 }
 
-// armato in casa se le porte sono aperte non entra in questo modo
-void setInCasa() {
-  if(digitalRead(MAGNETICI)==HIGH) return;
-  comm.Tx('U',0,0);
-  modoantifurto=INCASA;
-  impostaled(50,50);
+void setInizioTimeoutEntrata() {
+  modoantifurto=TIMEOUTENTRATA;
+  tInizioTimeoutEntrata=millis();
+  buzzer.OndaQuadra(500,500);
+  impostaled(300,300);
 }
+
 
 /*
  B0
@@ -350,7 +425,7 @@ void TrasmettiStatoSCheda() {
   byte par[8];
   par[0]=b0;
   par[1]=b1;
-  par[2]=tdurataallarme;
+  par[2]=tempoAllarme;
   par[3]=isteresi_crepuscolare;
   par[4]=(soglia_crepuscolare >> 8);
   par[5]=(soglia_crepuscolare & 0xff);
