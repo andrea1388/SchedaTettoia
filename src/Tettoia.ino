@@ -17,7 +17,7 @@
 #include "Antirimbalzo.h"
 #include "Proto485.h"
 #include "ControlloUscita.h"
-#define DEBUG
+//#define DEBUG
 #ifdef DEBUG
  #define DEBUG_PRINT(x, ...)  Serial.print (x, ##__VA_ARGS__)
  #define DEBUG_PRINTLN(x, ...)  Serial.println (x, ##__VA_ARGS__)
@@ -49,15 +49,15 @@
 // tempi gestione centralina
 unsigned int tempoAllarme; // in secondi
 byte tempoUscita; // in minuti
-byte tempoEntrata; // in minuti
+byte tempoEntrata; // in secondi
 byte tempoFari; // tempo accensione fari da pir in minuti
 
 // contatori timeout
-unsigned long int tInizioTimeoutUscita, tInizioTimeoutEntrata;
+unsigned long int tInizioTimeoutUscita, tInizioTimeoutEntrata, tInizioTimeoutAllarme;
 
 unsigned int soglia_crepuscolare;
 byte isteresi_crepuscolare;
-bool notte, faridapir,precstatoapricencello;
+bool notte, faridapir,precstatoapricencello, apriancheporta;
 typedef enum {DISARMATO, INCASA, ALLARME, FINEALLARME, TIMEOUTUSCITA, FUORICASA, TIMEOUTENTRATA} modalitaantifurto;
 modalitaantifurto modoantifurto; // 0=spento, 1=armato non in casa, 2=armato in casa
 
@@ -117,8 +117,8 @@ void setup() {
   DEBUG_PRINT(" tempoUscita=");
   DEBUG_PRINTLN(tempoUscita);
   DEBUG_PRINT("m tempoEntrata=");
-  DEBUG_PRINTLN(tempoUscita);
-  DEBUG_PRINT("m F_CPU=");
+  DEBUG_PRINTLN(tempoEntrata);
+  DEBUG_PRINT("s F_CPU=");
   DEBUG_PRINTLN(F_CPU,DEC);
 
   // setup ingressi
@@ -151,18 +151,21 @@ void loop() {
   buzzer.Elabora();
   
   // elabora funzioni
-  if(digitalRead(MAGNETICI)==LOW)
+  if(digitalRead(MAGNETICI)==HIGH)
     ElaboraAperturaMagnetici();
 
   ElaboraTimeoutAntifurto();
   ElaboraCrepuscolare();
-  if(Serial.available()) {comm.ProcessaDatiSeriali(Serial.read());}
+  if(Serial.available()) 
+  {
+    comm.ProcessaDatiSeriali(Serial.read());
+  }
   if(apricancello.Completato() && precstatoapricencello)
   {
     precstatoapricencello=false;
-    apriporta.OnOff(700,1000);
-  }
-  
+    if(apriancheporta) {apriporta.OnOff(700,1000);
+      apriancheporta = false;}
+    }
 }
 
 // ingressi attivati
@@ -188,12 +191,22 @@ void PulsanteAntifurtoClick() {
     case INCASA:
       setDisarmato();
       break;
+    case FUORICASA:
+      setDisarmato();
+      break;
     case FINEALLARME:
       setDisarmato();
       break;
+    case ALLARME:
+      setDisarmato();
+      break;
+    case TIMEOUTUSCITA:
+      setDisarmato();
+      break;
+    case TIMEOUTENTRATA:
+      setDisarmato();
+      break;
     }
-    DEBUG_PRINT(" modoalm=");
-    DEBUG_PRINTLN(modoantifurto);
 }
 
 void PulsanteAntifurtoClickLungo() {
@@ -211,8 +224,6 @@ void PulsanteAntifurtoClickLungo() {
       setDisarmato();
       break;
     }
-    DEBUG_PRINT(" modoalm=");
-    DEBUG_PRINTLN(modoantifurto);
 }
 
 void ElaboraCrepuscolare() {
@@ -243,57 +254,55 @@ void ElaboraAperturaMagnetici()
 {
   switch(modoantifurto) {
     case INCASA:
-      if(digitalRead(MAGNETICI)==LOW)
-        setAllarme();
+      setAllarme();
       break;
-
     case FUORICASA:
-      if(digitalRead(MAGNETICI)==LOW)
-        setInizioTimeoutEntrata();
+      setInizioTimeoutEntrata();
       break;
-
     }
-    DEBUG_PRINT(" modoalm=");
-    DEBUG_PRINTLN(modoantifurto);
 }
 
 void ElaboraTimeoutAntifurto() {
-
   switch(modoantifurto) 
   {
     case TIMEOUTUSCITA:
-      if((millis()- tInizioTimeoutUscita)>tempoUscita*1000)
+      if((millis()- tInizioTimeoutUscita)>tempoUscita*60000)
         setFuoriCasa();
       break;
-
     case TIMEOUTENTRATA:
       if((millis()- tInizioTimeoutEntrata)>tempoEntrata*1000)
         setAllarme();
       break;
-
+    case ALLARME:
+      if((millis()- tInizioTimeoutAllarme)>tempoAllarme*1000)
+        setFineAllarme();
+      break;
   }
-  DEBUG_PRINT(" modoalm=");
-  DEBUG_PRINTLN(modoantifurto);
-
 }
 
-void ApricancelloEPorta()
+void StampaModoAllarme()
+{
+  DEBUG_PRINT(" modoalm=");
+  DEBUG_PRINTLN(modoantifurto);
+}
+
+void ApricancelloEPorta(bool ancheporta)
 {
   apricancello.OnOff(700,1000);
   precstatoapricencello=true;
+  apriancheporta = ancheporta;
 }
 
 void ElaboraComando(byte comando,byte *bytesricevuti,byte len) {
   switch(comando) {
     case 'C': // pulsante apricancello
-      ApricancelloEPorta();
+      ApricancelloEPorta(false);
       AccendiFariSeNotte();
       break;
     case 'T': // tag ricevuto
-      ApricancelloEPorta();
+      ApricancelloEPorta(true);
       AccendiFariSeNotte();
-      if(modoantifurto==FUORICASA || modoantifurto==INCASA)
-        setDisarmato();
+      setDisarmato();
       break;
     case 'N':
       setInCasa();
@@ -343,7 +352,7 @@ void MemorizzaParametro(byte *bytesricevuti,byte len) {
 			break;
     case 'U':
       tempoEntrata=bytesricevuti[1];
-			EEPROM.put(6,tempoUscita);
+			EEPROM.put(6,tempoEntrata);
 			break;
 	}
 }
@@ -352,10 +361,12 @@ void MemorizzaParametro(byte *bytesricevuti,byte len) {
 
 void setDisarmato() {
   modoantifurto=DISARMATO;
-  sirena.Off();
   comm.Tx('S',0,0);
   impostaled(30,1500);
   ledrosso.Off();
+  buzzer.Off();
+  sirena.Off();
+  StampaModoAllarme();
 }
 
 // armato in casa se le porte sono aperte non entra in questo modo
@@ -364,6 +375,7 @@ void setInCasa() {
   comm.Tx('U',0,0);
   modoantifurto=INCASA;
   impostaled(50,50);
+  StampaModoAllarme();
 }
 
 // armato in casa se le porte sono aperte non entra in questo modo
@@ -371,11 +383,17 @@ void setAllarme() {
   comm.Tx('J',0,0);
   modoantifurto=ALLARME;
   ledrosso.On();
+  sirena.On();
+  buzzer.Off();
+  tInizioTimeoutAllarme = millis();
+  StampaModoAllarme();
 }
 
 void setFineAllarme() {
+  sirena.Off();
   comm.Tx('K',0,0);
   modoantifurto=FINEALLARME;
+  StampaModoAllarme();
 }
 
 void setInizioTimeoutUscita() {
@@ -383,6 +401,7 @@ void setInizioTimeoutUscita() {
   tInizioTimeoutUscita=millis();
   buzzer.OndaQuadra(500,500);
   impostaled(300,300);
+  StampaModoAllarme();
 }
 
 // armato ma non in casa se le porte sono aperte e la chiave è on non entra in questo modo
@@ -391,6 +410,7 @@ void setFuoriCasa() {
   modoantifurto=FUORICASA;
   buzzer.Off();
   impostaled(50,50);
+  StampaModoAllarme();
 }
 
 void setInizioTimeoutEntrata() {
@@ -398,6 +418,7 @@ void setInizioTimeoutEntrata() {
   tInizioTimeoutEntrata=millis();
   buzzer.OndaQuadra(500,500);
   impostaled(300,300);
+  StampaModoAllarme();
 }
 
 
@@ -422,7 +443,7 @@ void TrasmettiStatoSCheda() {
   if(digitalRead(RELELANTERNA)==LOW) b1=b1 | 0x08;
   if(digitalRead(RELESIRENA)==LOW) b1=b1 | 0x10;
   if(digitalRead(RELEAPRIPORTA)==LOW) b1=b1 | 0x20;
-  byte par[8];
+  byte par[9];
   par[0]=b0;
   par[1]=b1;
   par[2]=tempoAllarme;
@@ -431,5 +452,6 @@ void TrasmettiStatoSCheda() {
   par[5]=(soglia_crepuscolare & 0xff);
   par[6]=tempoFari;
   par[7]=tempoUscita;
-  comm.Tx('M',8,(const char *)par);
+  par[8]=tempoEntrata;
+  comm.Tx('M',9,(const char *)par);
 }
