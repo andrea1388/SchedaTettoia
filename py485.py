@@ -80,13 +80,28 @@ t = threading.Thread(target=read_serial)
 t.start()
 while True:
     value = input("Comando:\n")
-    if value=="Q":
+    value=value.split()
+    if value[0]=="Q":
         devouscire=True
         s.close
         print("ciao")
         break
-    elif value=="T":
+    elif value[0]=="T":
         buf=b'\x41\x4C\x00\x4C'
         print(buf)
         s.write(buf)
+    elif value[0]=="S" and len(value)==2:
+        soglia=float(value[1])
+        sd=int(1024*soglia/5)
+        buff=bytearray(b'\x41Q\x03S')
+        buff.append(sd & 255)
+        buff.append(sd >> 8)
+        somma=0
+        l=len(buff)
+        for x in range(1,l):
+            somma=somma+buff[x]
+        buff.append(somma & 255)
+        print(buff)
+        #for i in buff:
+        s.write(buff)
 
