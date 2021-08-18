@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import asyncio
 import serial
 import threading
@@ -6,7 +7,7 @@ client = Client(client_id = "Client485")
 
 
 devouscire=False
-s = serial.Serial('/dev/cu.wchusbserialfa1310', 9600)
+s = serial.Serial('/dev/serial/by-path/pci-0000:00:1d.1-usb-0:2:1.0-port0', 9600)
 
 def elabora(comando,datalen,data):
     if comando==66:
@@ -18,7 +19,31 @@ def elabora(comando,datalen,data):
         sd=data[5]+data[4]*255
         sa=5*(sd/1024)
         print("soglia: ",str(sd)," in Volt:", str(sa))
-    elif comando==90:
+    elif comando==84: # T
+        print("tag cancello esterno")
+        client.publish(topic = "cancello/tag", payload = "ON")
+    elif comando==67: # C
+        print("pulsante cancello esterno")
+        client.publish(topic = "cancello/apriporta", payload = "ON")
+    elif comando==68: # D
+        print("modo notte")
+        client.publish(topic = "modo/notte", payload = "ON")
+    elif comando==69: # E
+        print("modo giorno")
+        client.publish(topic = "modo/notte", payload = "OFF")
+    elif comando==74: # J
+        print("allarme")
+        client.publish(topic = "home/alarm", payload = "triggered")
+    elif comando==82: # R
+        print("armato fuori casa")
+        client.publish(topic = "home/alarm", payload = "armed_away")
+    elif comando==83: # S
+        print("disarmato")
+        client.publish(topic = "home/alarm", payload = "disarmed")
+    elif comando==85: # U
+        print("armato in casa")
+        client.publish(topic = "home/alarm", payload = "armed_home")
+    elif comando==90: # Z
         print("presenza tettoia")
         client.publish(topic = "portaesterna/presenza", payload = "ON")
     else:
@@ -83,7 +108,7 @@ def on_log(client,userdata,level,buff):
     print("mqttlog" + buff)
 
 client.username_pw_set("U1289$hr", "I8234%yu")
-client.tls_set("/Users/ac/hdd/lavori/SolarThermostat/certs/ca.crt")
+client.tls_set("/home/andrea/HAServer/conf/mosquitto/ca.crt")
 client.connect("ha.caveve.it",8883)
 client.on_message = on_message
 client.on_log = on_log
@@ -120,3 +145,4 @@ while True:
 
 client.loop_stop()
 client.disconnect()
+
