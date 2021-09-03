@@ -87,7 +87,7 @@ void setup() {
   pinMode(PULSANTEMODOALLARME, INPUT_PULLUP);
   pinMode(MAGNETICI, INPUT_PULLUP);
   pinMode(MOVIMENTO, INPUT_PULLUP);
-  pinMode(CREPUSCOLARE, INPUT_PULLUP);
+  pinMode(CREPUSCOLARE, INPUT);
 
   digitalWrite(TXENABLE, LOW);
   pinMode(TXENABLE, OUTPUT);
@@ -170,16 +170,36 @@ void loop() {
 
 // ingressi attivati
 void PulsanteLuciClick() {
-  lampada.Inverti();
+  if(lampada.isOn())
+    SpegniLampada();
+  else
+    AccendiLampada();
+}
+
+void AccendiLampada() {
+  lampada.On();
+  comm.Tx('g',0,0);
+}
+void SpegniLampada() {
+  lampada.Off();
+  comm.Tx('h', 0, 0);
+}
+void AccendiFari() {
+  fari.On();
+  comm.Tx('e',0,0);
+}
+void SpegniFari() {
+  fari.Off();
+  comm.Tx('f', 0, 0);
 }
 
 void PulsanteLuciLongClick() {
   if(fari.isOn()) {
-    fari.Off();
-    lampada.Off();
+    SpegniFari();
+    SpegniLampada();
   } else {
-    fari.On();
-    lampada.On();
+    AccendiLampada();
+    AccendiFari();
   }
 }
 
@@ -232,7 +252,11 @@ void ElaboraCrepuscolare() {
   tultimocontrollo=millis();
   unsigned int val = 1024-analogRead(CREPUSCOLARE);
   if(!notte && (val<soglia_crepuscolare-isteresi_crepuscolare)) {notte=true; comm.Tx('D',0,0); lanterna.On(); return;}
-  if(notte && (val>soglia_crepuscolare+isteresi_crepuscolare)) {notte=false; comm.Tx('E',0,0); lanterna.Off(); fari.Off(); lampada.Off(); return;}
+  if(notte && (val>soglia_crepuscolare+isteresi_crepuscolare)) {notte=false; comm.Tx('E',0,0); lanterna.Off();
+    SpegniLampada();
+    SpegniFari();
+    return;
+  }
 }
 
 void PirAttivato() {
@@ -323,6 +347,18 @@ void ElaboraComando(byte comando,byte *bytesricevuti,byte len) {
     // movimento da cancello
     case 'B':
       AccendiFariSeNotte();
+      break;
+    case 'c':
+      AccendiLampada();
+      break;
+    case 'd':
+      SpegniLampada();
+      break;
+    case 'a':
+      AccendiFari();
+      break;
+    case 'b':
+      SpegniFari();
       break;
   }
 }
@@ -433,7 +469,8 @@ void setInizioTimeoutEntrata() {
 
 */
 void TrasmettiStatoSCheda() {
-  byte b0=modoantifurto,b1=0;
+  unsigned int valore_crepuscolare = 1024-analogRead(CREPUSCOLARE);
+  byte b0 = modoantifurto, b1 = 0;
   if(digitalRead(MAGNETICI)==LOW) b0=b0 | 0x08;
   if(notte) b0=b0 | 0x10;
   if(digitalRead(MOVIMENTO)==HIGH) b0=b0 | 0x20;
@@ -443,7 +480,7 @@ void TrasmettiStatoSCheda() {
   if(digitalRead(RELELANTERNA)==LOW) b1=b1 | 0x08;
   if(digitalRead(RELESIRENA)==LOW) b1=b1 | 0x10;
   if(digitalRead(RELEAPRIPORTA)==LOW) b1=b1 | 0x20;
-  byte par[9];
+  byte par[11];
   par[0]=b0;
   par[1]=b1;
   par[2]=tempoAllarme;
@@ -453,5 +490,7 @@ void TrasmettiStatoSCheda() {
   par[6]=tempoFari;
   par[7]=tempoUscita;
   par[8]=tempoEntrata;
-  comm.Tx('M',9,(const char *)par);
+  par[9]=(valore_crepuscolare >> 8);
+  par[10]=(valore_crepuscolare & 0xff);
+  comm.Tx('M',11,(const char *)par);
 }

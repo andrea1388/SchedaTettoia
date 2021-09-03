@@ -3,3 +3,5 @@
 .vscode/c_cpp_properties.json
 lib/readme.txt
 .DS_Store
+.pio
+.vscode
