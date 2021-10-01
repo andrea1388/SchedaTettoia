@@ -2,18 +2,35 @@
 import asyncio
 import serial
 import threading
+import time
 from paho.mqtt.client import Client
-client = Client(client_id = "Client485")
 
 
-devouscire=False
-s = serial.Serial('/dev/serial/by-path/pci-0000:00:1d.1-usb-0:2:1.0-port0', 9600)
-# s = serial.Serial('/dev/cu.wchusbserialfa1340', 9600)
 
+def on_message(client, userdata, message):
+    # print("Received message '" + str(message.payload) + "' on topic '" + message.topic + "' with QoS " + str(message.qos))
+    msg=message.payload.decode()
+    if msg=="accendilampadatettoia":
+        Tx('c',0,0)
+    elif msg=="spegnilampadatettoia":
+        Tx('d',0,0)
+    elif msg=="apricancello":
+        Tx('C',0,0)
+    elif msg=="apricancelloeporta":
+        Tx('T',0,0)
+    elif msg=="armaincasa":
+        Tx('N',0,0)
+    elif msg=="armanonincasa":
+        Tx('P',0,0)
+    elif msg=="disarma":
+        Tx('O',0,0)
+    else:
+        print("comando mqtt non riconosciuto: " + str(message.payload))
 
 def elabora(comando,datalen,data):
     if comando==66:
-        print("presenza cancello")
+        pass
+        # print("presenza cancello")
     elif comando==67: # C
         print("pulsante cancello esterno")
         client.publish(topic = "cancello/apriporta", payload = "ON")
@@ -24,6 +41,7 @@ def elabora(comando,datalen,data):
         print("modo giorno")
         client.publish(topic = "modo/notte", payload = "OFF")
     elif comando==73:
+        pass
         # print("temp")
     elif comando==74: # J
         print("allarme")
@@ -66,81 +84,19 @@ def elabora(comando,datalen,data):
     else:
         print("cmd non gestito:"+str(comando))
 
-def read_serial():
-    stato=0
-    sum=0
-    cmd=0
-    len=0
-    numdati=0
-    dati=bytearray(12)
 
-    while True:
-        if devouscire==True: break
-        reading = s.read(1)
-        b=reading[0]
-        #print(b)
-        
-        if b==65 and stato==0:
-            stato=1
-            
-
-        elif stato==1:
-            sum=sum+b
-            cmd=b
-            stato=2
-
-        elif stato==2:
-            sum=sum+b
-            len=b
-            if len>0:
-                stato=3
-                numdati=0
-            else:
-                stato=4
-
-        elif stato==3:
-            sum=sum+b
-            dati[numdati]=b 
-            numdati=numdati+1
-            if numdati==len:
-                stato=4
-
-
-        elif stato==4:
-            if sum & 255 == b:
-                elabora(cmd,numdati,dati)
-            stato=0
-            sum=0
-        
-
-        else:
-            print("errore stato")
-        
-        #print("stato="+str(stato))
-
-def on_message(client, userdata, message):
-    # print("Received message '" + str(message.payload) + "' on topic '" + message.topic + "' with QoS " + str(message.qos))
-    msg=message.payload.decode()
-    if msg=="accendilampadatettoia":
-        Tx('c',0,0)
-    elif msg=="spegnilampadatettoia":
-        Tx('d',0,0)
-    elif msg=="apricancello":
-        Tx('C',0,0)
-    elif msg=="apricancelloeporta":
-        Tx('T',0,0)
-    elif msg=="armaincasa":
-        Tx('N',0,0)
-    elif msg=="armanonincasa":
-        Tx('P',0,0)
-    elif msg=="disarma":
-        Tx('O',0,0)
-    else:
-        print("comando mqtt non riconosciuto: " + str(message.payload))        
 
 
 def on_log(client,userdata,level,buff):
     print("mqttlog" + buff)
+
+def on_disconnect(client, userdata, rc):
+    if(devouscire): 
+        return
+    print(" Unexpected disconnection")
+    print("Trying to Reconnect")
+    client.reconnect
+
 
 def Tx(comando,datalen,dati):
     buf=bytearray(datalen+4)
@@ -153,28 +109,94 @@ def Tx(comando,datalen,dati):
         buf[k+2]=dati[k]
     somma=somma & 255
     buf[datalen+3]=somma
-    s.write(buf)
-    print(buf)
+    try:
+        ser.write(buf)
+    except:
+        pass
 
 
+def read_serial():
+    global ser
+    stato=0
+    sum=0
+    cmd=0
+    len=0
+    numdati=0
+    dati=bytearray(12)
+
+    while True:
+        if devouscire==True: break
+        try:
+            reading = ser.read(1)
+            b=reading[0]
+            if b==65 and stato==0:
+                stato=1
+            elif stato==1:
+                sum=sum+b
+                cmd=b
+                stato=2
+            elif stato==2:
+                sum=sum+b
+                len=b
+                if len>0:
+                    stato=3
+                    numdati=0
+                else:
+                    stato=4
+            elif stato==3:
+                sum=sum+b
+                dati[numdati]=b 
+                numdati=numdati+1
+                if numdati==len:
+                    stato=4
+            elif stato==4:
+                if sum & 255 == b:
+                    elabora(cmd,numdati,dati)
+                stato=0
+                sum=0
+            else:
+                print("errore stato"+str(stato))
+        except serial.SerialException as e:
+            while True:
+                if devouscire==True: return
+                print("serial exc:"+str(e))
+                ser = None
+                time.sleep(10)
+                try:
+                    ser = serial.Serial(serialportname, 9600)
+                except:
+                    pass
+                else:
+                    print("serial port reconnected")
+                    break
+        except TypeError as e:
+            print("type exc:"+str(e))
+            break
+
+
+client = Client(client_id = "Client485")
+devouscire=False
+# serialportname="/dev/cu.wchusbserialfa1340"
+serialportname="/dev/serial/by-path/pci-0000:00:1d.1-usb-0:2:1.0-port0"
+ser = serial.Serial(serialportname, 9600)
 client.username_pw_set("U1289$hr", "I8234%yu")
 #client.tls_set("/Volumes/Hdd/Users/ac/lavori/SolarThermostat/certs/ca.crt")
 client.tls_set("/home/andrea/HAServer/conf/mosquitto/ca.crt")
 client.connect("ha.caveve.it",8883)
 client.on_message = on_message
+client.on_disconnect = on_disconnect
 #client.on_log = on_log
 client.loop_start()
 client.publish(topic = "sta", payload = "485cli started") 
 client.subscribe("485gateway")
-t = threading.Thread(target=read_serial)
+t = threading.Thread(target=read_serial,daemon=None)
 t.start()
-
+#client.loop_forever
 while True:
     value = input("Comando:\n")
     value=value.split()
     if value[0]=="Q":
         devouscire=True
-        s.close
         print("ciao")
         break
     elif value[0]=="T":
@@ -197,7 +219,7 @@ while True:
         print(buff)
         #for i in buff:
         s.write(buff)
-
+ser.close()
+ser=None
 client.loop_stop()
 client.disconnect()
-
