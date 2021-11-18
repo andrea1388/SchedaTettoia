@@ -3,6 +3,7 @@ import asyncio
 import serial
 import threading
 import time
+import sys
 from paho.mqtt.client import Client
 
 
@@ -83,19 +84,30 @@ def elabora(comando,datalen,data):
         client.publish(topic = "tettoia/lampada", payload = "spegnilampadatettoia")    
     else:
         print("cmd non gestito:"+str(comando))
+    sys.stdout.flush()
 
 
-
+def on_connect(client, userdata, flags, rc):
+    print("Connected with result code "+str(rc))
+    client.subscribe("485gateway")
 
 def on_log(client,userdata,level,buff):
     print("mqttlog" + buff)
+    sys.stdout.flush()
 
 def on_disconnect(client, userdata, rc):
     if(devouscire): 
         return
-    print(" Unexpected disconnection")
-    print("Trying to Reconnect")
-    client.reconnect
+    print("mqtt disconnected.")
+    while True:
+        try:
+            print("Trying to Reconnect")
+            client.connect("ha.caveve.it",8883)
+            return
+        except:
+            pass
+        time.sleep(30)
+        
 
 
 def Tx(comando,datalen,dati):
@@ -155,7 +167,9 @@ def read_serial():
                 stato=0
                 sum=0
             else:
-                print("errore stato"+str(stato))
+                if b!=0:
+                    print("errore stato="+str(stato)+" b="+str(b))
+                stato=0
         except serial.SerialException as e:
             while True:
                 if devouscire==True: return
@@ -172,6 +186,7 @@ def read_serial():
         except TypeError as e:
             print("type exc:"+str(e))
             break
+        sys.stdout.flush()
 
 
 client = Client(client_id = "Client485")
@@ -184,15 +199,16 @@ client.username_pw_set("U1289$hr", "I8234%yu")
 client.tls_set("/home/andrea/HAServer/conf/mosquitto/ca.crt")
 client.connect("ha.caveve.it",8883)
 client.on_message = on_message
+client.on_connect = on_connect
 client.on_disconnect = on_disconnect
 #client.on_log = on_log
 client.loop_start()
-client.publish(topic = "sta", payload = "485cli started") 
-client.subscribe("485gateway")
+#client.publish(topic = "sta", payload = "485cli started") 
+#client.subscribe("485gateway")
 t = threading.Thread(target=read_serial,daemon=None)
 t.start()
-#client.loop_forever
-while True:
+#client.loop_forever(retry_first_connection=True)
+""" while True:
     value = input("Comando:\n")
     value=value.split()
     if value[0]=="Q":
@@ -223,3 +239,4 @@ ser.close()
 ser=None
 client.loop_stop()
 client.disconnect()
+ """
